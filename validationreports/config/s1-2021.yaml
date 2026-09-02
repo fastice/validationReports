@@ -1,0 +1,53 @@
+# Greenland SENTINEL-1 validation configuration -- the hop_s1 errCal year.
+#
+# Flags match Release/velocity/errCal/hop_s1/mosaic.template.yaml baseFlags exactly
+# (timeThresh/timePhaseThresh 10000, no -timeOverlap, squint off), except -hopper is
+# run as -hopper3D -hopper3DMaxSigma -1, which reproduces the 2D hopper to a median
+# 1.2e-05 m/yr and emits az and sx/sy into the obsDump.
+#
+# EPOCH CAVEAT: the NIU GPS record starts 2024-05, so nothing here is contemporaneous.
+# Every row will be flagged `extrap` (long-term GPS mean) at the stable stations and
+# dropped at the rest. Read the result as S1-vs-longTermGpsMean, on the same reference
+# NISAR was measured against.
+region: greenlandS1
+label: Greenland S1
+projectDir: /Volumes/insar1/ian/NISAR/realNISAR/newGreenlandProject
+masterInput: Release/velocity/errCal/s1_rg_joint/track-all/inputFile
+gpsDir: GPS
+validationDir: validationS1-2021
+epsg: 3413
+dem: /Volumes/insar7/ian/gimp/gimp2/270m/dem.gimp2.270m.cog.tif   # greenland.yaml dem
+shelfMask: null                                                     # production: none
+#
+# mosaic3d point-mode run (mirrors Release/velocity/hopper2d-nosquint baseFlags; -fl 1
+# since the boxes are small; no squint anywhere by decision 2026-09-02)
+mosaic3d:
+  flags: "-SVConst -verticalCorrection /Volumes/insar10/ian/SMB/corrections/RacmoMARAvg-iceEquiv-1958-2021 -fl 1 -noVh -rOffsets -hopper3D -hopper3DMaxSigma -1 -timeThresh 10000 -timePhaseThresh 10000"
+  useSquint: false
+  dx: 0.2            # km, production grid spacing
+  date1: 12-01-2020
+  date2: 11-30-2021
+  ompThreads: 8
+#
+# One mosaic3d run per group; the output box is the station bounding box + marginKm
+groups:
+  - {name: NIL, stations: [NIL1, NIL2, NIL3, NIL4, NIL5], marginKm: 5}
+  - {name: NIU, stations: [NIU1, NIU2, NIU3, NIU4, NIU5], marginKm: 5}
+#
+requirements:
+  slow:     {id: L2-SCI-667, absErr: 1,  pct: 0.03, maxSpeed: 50}
+  fast:     {id: L2-SCI-668, absErr: 5,  pct: 0.03, minSpeed: 50}
+  seasonal: {id: L2-SCI-738, absErr: 10, pct: 0.03, pairDays: 12, minRows: 4, maxSigma: 10, minCoverage: 0.8}
+projectionCycles: 30
+#
+gps:
+  windowDays: 12          # sliding-window length for the GPS velocity series
+  stepDays: 3             # step between successive windows
+  minCoverageFrac: 0.5    # fraction of window days (and span) that must have data
+  minPoints: 10           # minimum epochs in a window
+  sigmaMultiple: 3        # outlier rejection about the line fit (nisarStation convention)
+  denseEpochsPerDay: 1000 # >= this many epochs/day = continuous 30 s regime
+  smoothDays: 36          # smoothing applied to the 12-day speeds before the stability test
+  stableTolFrac: 0.5      # stable if smoothed peak-to-peak <= this * requirement tolerance
+  stepMaxAngle: 30        # a position step more than this many degrees off the flow
+                          # direction is an antenna reset / regime offset, not motion

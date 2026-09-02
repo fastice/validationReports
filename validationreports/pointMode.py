@@ -53,7 +53,13 @@ def writeInputs(cfg, group, stations):
     header = boxHeader(rows, cfg['mosaic3d']['dx'], group.get('marginKm', 5))
     with open(cfg['paths']['masterInput']) as fp:
         lines = fp.readlines()
-    lines[0] = header + '\n'
+    #  The output-area line is the first NON-comment line: the NISAR master input
+    #  starts with it directly, but the Sentinel-1 one leads with "; Output area".
+    #  Blindly replacing lines[0] there left the real area line in place, and
+    #  mosaic3d read the second one as projection parameters -- "Could not
+    #  determine epgs from rot=0 slat=0".
+    iArea = next(i for i, ln in enumerate(lines) if not ln.lstrip().startswith(';'))
+    lines[iArea] = header + '\n'
     with open(os.path.join(outDir, 'inputFile'), 'w') as fp:
         fp.writelines(lines)
     return outDir
