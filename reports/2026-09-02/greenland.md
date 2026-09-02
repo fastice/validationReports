@@ -10,8 +10,8 @@ Automated validation of the NISAR ice-velocity requirements over Greenland again
 
 > **Status**
 >
-> - **L2-SCI-667** (slow): **not met** — RMS residual/tolerance now: speed 1.40, vx 1.40, vy 0.60; projected at 30 cycles: speed 1.30, vx 1.33, vy 0.53; cycles needed: speed never at this bias, vx never at this bias, vy 7; 20 cycles, 4 stations, GPS measured
-> - **L2-SCI-668** (fast): **met** — RMS residual/tolerance now: speed 0.57, vx 0.59, vy 0.25; projected at 30 cycles: speed 0.50, vx 0.53, vy 0.20; cycles needed: speed 4, vx 4, vy 1; 20 cycles, 4 stations, GPS measured
+> - **L2-SCI-667** (slow): **not met** — RMS residual/tolerance now: speed 1.40, vx 1.40, vy 0.60; projected at 30 cycles: speed 1.30, vx 1.35, vy 0.55; cycles needed: speed never at this bias, vx never at this bias, vy 6; 20 cycles, 4 stations, GPS measured
+> - **L2-SCI-668** (fast): **met** — RMS residual/tolerance now: speed 0.57, vx 0.59, vy 0.25; projected at 30 cycles: speed 0.50, vx 0.55, vy 0.20; cycles needed: speed 4, vx 3, vy 1; 20 cycles, 4 stations, GPS measured
 > - **L2-SCI-738** (seasonal): **met** — within envelope: speed 100%, vx 100%, vy 97%; 35/43 intervals gated (coverage 81%), 4 stations; RMS speed error 7.9 m/yr
 
 ## Method
@@ -64,4 +64,4 @@ GPS windows use every epoch inside the window (regression, not endpoint differen
 - master input: `/Volumes/insar1/ian/NISAR/realNISAR/newGreenlandProject/Release/masterInput/inputFile` (updated 2026-09-02 08:46)
 - cycles: 3-9, 15-22, 24-28; observation rows: 1172
 - mosaic3d: `-SVConst -verticalCorrection /Volumes/insar10/ian/SMB/corrections/RacmoMARAvg-iceEquiv-1958-2021 -fl 1 -noVh -rOffsets -hopper3D -hopper3DMaxSigma -1 -timeThresh 37 -timePhaseThresh 10000 -timeOverlap`, squint off
-- generated: 2026-09-02T11:26:56
+- generated: 2026-09-02T15:08:08

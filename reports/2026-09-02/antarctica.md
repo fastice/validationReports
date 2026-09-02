@@ -60,4 +60,4 @@ GPS windows use every epoch inside the window (regression, not endpoint differen
 - master input: `/Volumes/insar4/ian/Antarctica2026/Release/track-all/inputFile` (updated 2026-09-02 04:57)
 - cycles: 15-28; observation rows: 394
 - mosaic3d: `-SVConst -verticalCorrection /Volumes/insar10/ian/SMB/corrections/RacmoMARAvg-iceEquiv-1958-2021 -fl 1 -noVh -rOffsets -hopper3D -hopper3DMaxSigma -1 -timeThresh 37 -timePhaseThresh 10000 -timeOverlap`, squint off
-- generated: 2026-09-02T11:48:05
+- generated: 2026-09-02T15:08:23

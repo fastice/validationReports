@@ -57,3 +57,46 @@ tie-point corrections) resolves to the S1 `multiYear` `v01.0` product written
 0.72–0.90 of GPS, while all nine annual mosaics, and an average of them, read
 0.99–1.00. The stored multi-year composite is biased on slow interior ice; the annuals
 are not. Treat `refVx`/`refVy` accordingly.
+
+## Reproducing the cull
+
+`buildReferencePoints.py` regenerates all three CSVs from their sources. Run it from
+this directory. It is not part of any pipeline — it exists so the culling is auditable.
+
+The cull is two independent steps, reported separately:
+
+1. **`lat < 77`** — 152 → 120. North of that there is either no data or the geometry
+   is too poor to trust. A judgement call, not a measurement.
+2. **projected change < 0.5 × tolerance** — 120 → 45. The S1 annual stack (9 epochs,
+   2014-15 … 2022-23) gives a per-point OLS trend of speed against epoch year; that
+   slope is extrapolated linearly over the 26-year gap from the tie epoch (~2000) to
+   the NISAR mosaic centre (~2026) and compared against T = 0.03·v + 1 (slow) or
+   0.03·v + 5 (fast), classified by tie-point speed.
+
+No outlier rejection, no speed cut, no nodata losses — every one of the 152 data lines
+parses and every point has both reference and NISAR coverage. The source file's
+trailing `&` terminator is the only line skipped.
+
+## Solver settings, and how they compare to the GPS runs
+
+The tie-point `obsDump`s were produced with **the same `cfg['mosaic3d']['flags']` as
+the GPS point-mode runs** — `mosaic3d`'s own logged settings block diffs clean between
+`pointMode/NIU/run.log` and `pointMode/TIE01/run.log`:
+
+    ; SOLVER: hopper3D (forced 2D)  rows: phase range azimuth
+
+so the per-observation sigmas and weights come from an identical chain. Two differences
+that do exist:
+
+- **Thread count is not uniform**: 8 of the 33 clusters ran at `-ompThreads 8` and 25 at
+  `-ompThreads 2`. The hopper is deterministic single-threaded but not bit-reproducible
+  across thread counts (~50 of 33,812 px, max 4.4e-3 m/yr, from `llToImageNew`'s
+  `lastTime` warm-start). Far below anything that matters here, but it is not a
+  bit-identical configuration.
+- **The forward model is not the same, and cannot be.** GPS validation pushes the GPS
+  through each observation's own window, so temporal sampling cancels exactly. The tie
+  points have no time series — truth is one constant velocity — so `dGps = a · v_tie`
+  with the surface-parallel vertical, and every row is labelled `quality='real'`. That
+  label is generous: the tie epoch does not overlap the NISAR window at all, and by the
+  GPS convention these rows would be `extrap`. The screening in step 2 is what justifies
+  treating them as valid, not the label.
