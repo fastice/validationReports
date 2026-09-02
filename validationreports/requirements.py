@@ -116,6 +116,17 @@ def projectSeries(k, rms, nTarget, minCycles=4):
     if len(k) == 0:
         return dict(projected=np.nan, floor=np.nan, random=np.nan, method='none')
     fit = (k >= minCycles) & (rms > 0)
+    #  A step whose solve is still geometry-starved lands anywhere -- k=4 was
+    #  measured at 0.36 for phase and 28.21 for range on the same stations.
+    #  Either wrecks the fit, and the relative weighting below cannot help:
+    #  1/rms^2 SUPPRESSES a large outlier but AMPLIFIES a small one, handing a
+    #  lucky-low early step 15x the weight of the converged steady state (that
+    #  drove a flat 1.39 series to a projected 0.49).  Cut on distance from the
+    #  converged level, which is blind to the direction of the excursion.
+    if fit.sum() >= 6:
+        level = np.median(rms[fit][len(rms[fit]) // 2:])
+        if level > 0:
+            fit &= (rms > level / 3.) & (rms < level * 3.)
     if fit.sum() >= 3:
         # relative weighting: otherwise the largest early value dominates e^2
         wgt = 1. / rms[fit] ** 2
