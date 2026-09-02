@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "validationReports"
+version = "0.0.1"
+description = "NISAR ice-velocity requirement validation against GPS: dashboard and dated reports"
+authors = [
+    { name = "Ian Joughin", email = "irj@uw.edu" }
+]
+license = { text = "MIT" }
+readme = "README.md"
+keywords = ["SAR", "NISAR", "ice velocity", "validation", "GPS", "cal/val"]
+requires-python = ">=3.9"
+
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyarrow",        # GPS parquet files
+    "pyproj",         # lat/lon -> polar stereographic, parallel_scale
+    "scipy",          # linregress
+    "matplotlib",
+    "pyyaml",
+    "gdal",           # sampling mosaic3d GeoTIFFs in the verification checks
+]
+
+[tool.setuptools]
+packages = ["validationreports"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+validationreports = ["config/*.yaml"]
+
+[project.urls]
+Homepage = "https://github.com/fastice/validationReports"
+Repository = "https://github.com/fastice/validationReports"
+
+[project.scripts]
+runValidation = "validationreports.runValidation:main"

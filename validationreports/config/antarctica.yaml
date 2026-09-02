@@ -1,0 +1,41 @@
+# Antarctica NISAR validation configuration
+region: antarctica
+label: Antarctica
+projectDir: /Volumes/insar4/ian/Antarctica2026
+masterInput: Release/track-all/inputFile          # the live master (4799 lines, cycles 15+)
+gpsDir: GPS
+validationDir: validation
+epsg: 3031
+dem: /Volumes/insar1/ian/CopernicusDEM/270m/dem.wgs84.270m.tif   # antarctica.yaml dem
+shelfMask: null                                                   # production: none
+#
+# mosaic3d point-mode run (mirrors Release/Velocity/hopper2d baseFlags; no squint by
+# decision 2026-09-02)
+mosaic3d:
+  flags: "-SVConst -verticalCorrection /Volumes/insar10/ian/SMB/corrections/RacmoMARAvg-iceEquiv-1958-2021 -fl 1 -noVh -rOffsets -hopper3D -hopper3DMaxSigma -1 -timeThresh 37 -timePhaseThresh 10000 -timeOverlap"
+  useSquint: false
+  dx: 0.5            # km, production grid spacing
+  date1: 06-01-2025
+  date2: 11-30-2026
+  ompThreads: 8
+#
+groups:
+  - {name: ROSS, stations: [NIT0, NIT1, NIT2, NIT3, NIT4], marginKm: 5}
+  - {name: NIT7, stations: [NIT7], marginKm: 5}
+#
+requirements:
+  slow:     {id: L2-SCI-667, absErr: 1,  pct: 0.03, maxSpeed: 50}
+  fast:     {id: L2-SCI-668, absErr: 5,  pct: 0.03, minSpeed: 50}
+  seasonal: {id: L2-SCI-738, absErr: 10, pct: 0.03, pairDays: 12, minRows: 4, maxSigma: 10, minCoverage: 0.8}
+projectionCycles: 30
+#
+gps:
+  windowDays: 12
+  stepDays: 3
+  minCoverageFrac: 0.5
+  minPoints: 10
+  sigmaMultiple: 3
+  denseEpochsPerDay: 1000
+  smoothDays: 36
+  stableTolFrac: 0.5
+  stepMaxAngle: 30

@@ -1,0 +1,4 @@
+__pycache__/
+*.egg-info/
+graphify-out/
+.ipynb_checkpoints/
