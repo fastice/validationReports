@@ -15,7 +15,16 @@ import pandas as pd
 
 from validationreports import gpsSeries
 
-QUALITIES = ['real', 'interp', 'extrap', 'skip']
+QUALITIES = ['real', 'interp', 'extrap', 'static', 'skip']
+
+
+def staticReferences(info, rows):
+    '''Constant-velocity reference for a static point (no time series).'''
+    keys = rows[['date0', 'nDays']].drop_duplicates()
+    return pd.DataFrame(dict(date0=keys['date0'], nDays=keys['nDays'],
+                             vxG=float(info['vx']), vyG=float(info['vy']),
+                             quality='static', gpsRegime='static',
+                             gpsSigVx=np.nan, gpsSigVy=np.nan))
 
 
 def _interpolate(windows, mid, nDays):
@@ -70,8 +79,11 @@ def addForwardModel(rows, cfg, stations, windows, verbose=True):
         if name not in set(stations['station']):
             raise ValueError(f'{name} in dump but not in stations.csv')
         info = stations[stations['station'] == name].iloc[0]
-        station = gpsSeries.loadStation(cfg, name)
-        refs = windowReferences(station, info, windows[name], sub, cfg['gps'])
+        if info.get('kind', 'gps') == 'static':
+            refs = staticReferences(info, sub)
+        else:
+            station = gpsSeries.loadStation(cfg, name)
+            refs = windowReferences(station, info, windows[name], sub, cfg['gps'])
         merged = sub.merge(refs, on=['date0', 'nDays'], how='left')
         parts.append(merged)
         if verbose:

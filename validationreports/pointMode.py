@@ -116,6 +116,22 @@ def runGroup(cfg, group, stations, force=False, verbose=True):
     return dump
 
 
+def _assignFreeNames(cfg, groups):
+    '''Rename groups that need a run so they never reuse an existing directory.'''
+    import re
+    base = cfg['paths']['pointMode']
+    taken = set(os.listdir(base))
+    prefixes = {s['name']: s.get('groupPrefix', s['name'].upper())
+                for s in cfg.get('referenceSets', [])}
+    for group in groups:
+        prefix = prefixes.get(group.get('set'), re.sub(r'\d+$', '', group['name']))
+        used = [int(m.group(1)) for d in taken
+                for m in [re.fullmatch(re.escape(prefix) + r'_?(\d+)', d)] if m]
+        n = max(used, default=0) + 1
+        group['name'] = f'{prefix}_{n:02d}'
+        taken.add(group['name'])
+
+
 def countRows(dump):
     '''{station: nOBS} for a dump file.'''
     counts = {}
@@ -128,7 +144,8 @@ def countRows(dump):
 
 
 def runDumpStage(cfg, force=False, verbose=True):
-    '''Run every group; fail loudly if any station has no rows.'''
+    '''Run every GPS group and every static-set cluster; write groups.json.'''
+    from validationreports import referencePoints
     stations, _, _ = gpsSeries.loadGpsStage(cfg)
     results = {}
     for group in cfg['groups']:
@@ -139,6 +156,42 @@ def runDumpStage(cfg, force=False, verbose=True):
             results[name] = n
             if verbose:
                 print(f'    {name}: {n} OBS rows')
+    # static reference sets: reuse any existing dump with the same point set;
+    # clusters that need a run get a directory name no existing run uses, and
+    # run maxParallel at a time
+    static = referencePoints.loadAllSets(cfg)
+    mapping, toRun = {}, []
+    for group in referencePoints.staticGroups(cfg, static):
+        existing = None if force else referencePoints.findExistingDir(cfg, group, static)
+        if existing is not None:
+            if verbose:
+                print(f"  {group['name']}: reusing {os.path.basename(existing)}")
+            mapping[group['name']] = dict(dir=existing, set=group['set'],
+                                          stations=group['stations'], kind='static')
+        else:
+            toRun.append(group)
+    if toRun:
+        _assignFreeNames(cfg, toRun)
+        maxParallel = cfg['mosaic3d'].get('maxParallel', 8)
+        if verbose:
+            print(f'  running {len(toRun)} static groups, {maxParallel} at a time')
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=maxParallel) as pool:
+            dumps = list(pool.map(
+                lambda g: runGroup(cfg, g, static, force=True, verbose=verbose), toRun))
+        for group, dump in zip(toRun, dumps):
+            mapping[group['name']] = dict(dir=os.path.dirname(dump), set=group['set'],
+                                          stations=group['stations'], kind='static')
+    for name, g in mapping.items():
+        counts = countRows(os.path.join(g['dir'], 'mosaicOffsets.obsDump'))
+        for station in g['stations']:
+            results[station] = counts.get(station, 0)
+    referencePoints.saveGroups(cfg, mapping)
+    if verbose and mapping:
+        pts = [s for g in mapping.values() for s in g['stations']]
+        empty = [s for s in pts if results.get(s, 0) == 0]
+        print(f'  static sets: {len(mapping)} groups, {len(pts)} points, '
+              f'{len(empty)} without rows {empty if empty else ""}')
     empty = [n for n, c in results.items() if c == 0]
     if empty:
         print(f'WARNING: no observations dumped for {empty}')

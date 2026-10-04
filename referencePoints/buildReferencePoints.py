@@ -11,6 +11,8 @@ reproducible and auditable, not so it runs routinely.  Sources:
                          tiepoints.2000.vz  (epoch ~2000)
   REFVRT                 the project velMap, sampled for context only
   ANNUAL                 the S1 annual mosaic stack used to detect real change
+  NEGISFILE              Hvidberg et al. (2020) NEGIS/EastGRIP GPS network, as
+                         supplied in nisarCryoCalValNotebooks/GPSpoints
 """
 import glob, os, re
 import numpy as np, pandas as pd, rasterio, pyproj
@@ -21,6 +23,7 @@ ANNUAL  = '/Volumes/insar9/ian/Sentinel1/Release/annualMosaics/Vel-*/'
 NISAR   = ('/Volumes/insar1/ian/NISAR/realNISAR/newGreenlandProject/Release/velocity/'
            'hopper2d-nosquint/Vel-2025-06-01.2026-11-30/release/'
            'GL-hop2d-nosq_vel_mosaic_multiYear_01Jun25_30Nov26')
+NEGISFILE = '/home/ian/NISAR/nisarCryoCalValNotebooks/GPSpoints/NEGIS-GPS.txt'
 
 MAXLAT   = 77.0   # north of this: no data, or geometry too poor to trust (user call)
 TIE_EPOCH= 2000.0 # tie points are ~25 yr old
@@ -151,7 +154,33 @@ def addStack(d):
     return d
 
 
+def buildNegis():
+    '''lat lon elev vx vy flag -- vx/vy are EPSG:3413 components (checked: the S1
+    annual stack reads 1.0007 of the GPS speed, median over the 63 points).
+
+    Header line starts with "#", the file ends with "&".  No cull: the GPS epoch
+    (~2016-17) sits inside the S1 stack span, and the stack mean agrees with it,
+    so the trend screen used for the 26-yr-old tie points is not needed here.
+    '''
+    r = []
+    for line in open(NEGISFILE):
+        p = line.split()
+        if line.startswith('#') or len(p) < 5:
+            continue
+        r.append([float(v) for v in p[:5]])
+    d = pd.DataFrame(r, columns=['lat', 'lon', 'elev', 'vx', 'vy'])
+    d['x'], d['y'] = TF.transform(d.lon.values, d.lat.values)
+    d['speed'] = np.hypot(d.vx, d.vy)
+    d = addStack(d)
+    d = d.drop(columns='projChange26yr')
+    d.to_csv('negisPoints.csv', index=False)
+    print(f'NEGIS: {len(d)} points, S1 stack / GPS speed median '
+          f'{np.nanmedian(d.s1StackMean / d.speed):.4f}')
+    return d
+
+
 def main():
+    buildNegis()
     print('Summit:', len(buildSummit()), 'stations')
     d = readTiePoints()
     d['refVx'] = sampleRaster(REFVRT, d.x, d.y)                     # band 1 = vx

@@ -16,7 +16,8 @@ import pandas as pd
 from validationreports import cycles, gpsSeries, obsDump, forwardModel
 
 QUANTITIES = ['vx', 'vy', 'speed']
-USABLE = ['real', 'interp', 'extrap']
+USABLE = ['real', 'interp', 'extrap', 'static']
+ALL_GROUP = 'all'
 
 
 def thresholdFor(speedGps, reqClass, requirements):
@@ -69,6 +70,7 @@ def cumulativeEstimates(rows, stations, cfg):
             if rec is None:
                 continue
             rec.update(station=name, k=k, cycle=int(c), reqClass=info['reqClass'],
+                       group=info.get('group', 'gps'),
                        nCyclesStation=int(part['cycle'].nunique()))
             rec = addResiduals(rec, info['reqClass'], reqs[info['reqClass']]['absErr'], reqs)
             out.append(rec)
@@ -79,7 +81,10 @@ def seasonalEstimates(rows, stations, cfg):
     '''Per (station, cycle) estimate from the 12-day pairs of that cycle.'''
     reqs = cfg['requirements']
     s = reqs['seasonal']
-    usable = rows[rows['quality'].isin(USABLE) & (rows['nDays'] == s['pairDays'])]
+    # pairDays: one pair length or a list (e.g. [12, 24] to keep the 24-day pairs from
+    # acquisition gaps; the GPS is forward-modelled over each pair's own dates either way)
+    pairDays = s['pairDays'] if isinstance(s['pairDays'], list) else [s['pairDays']]
+    usable = rows[rows['quality'].isin(USABLE) & rows['nDays'].isin(pairDays)]
     out = []
     for (name, c), part in usable.groupby(['station', 'cycle']):
         info = stations[stations['station'] == name].iloc[0]
@@ -98,6 +103,45 @@ def seasonalEstimates(rows, stations, cfg):
         rec['rspeedFast'] = rec['dspeed'] / Tfast
         out.append(rec)
     return pd.DataFrame(out)
+
+
+def crossingSeparation(rows, pairDays):
+    '''{(station, cycle): largest angle (deg, mod 180) between the horizontal range
+    look directions of the tracks with usable range rows in that cycle.'''
+    use = rows[rows['quality'].isin(USABLE) & rows['nDays'].isin(pairDays)
+               & (rows['obsType'] == 'range')]
+    sep = {}
+    for key, part in use.groupby(['station', 'cycle']):
+        ang = [np.degrees(np.arctan2(d['ay'].mean(), d['ax'].mean())) % 180
+               for _, d in part.groupby('track')]
+        best = 0.
+        for i in range(len(ang)):
+            for j in range(i + 1, len(ang)):
+                dd = abs(ang[i] - ang[j]) % 180
+                best = max(best, min(dd, 180 - dd))
+        sep[key] = best
+    return sep
+
+
+def seasonalAllPoints(rows, stations, cfg):
+    '''L2-SCI-738 scored at every reference point, GPS and static alike.
+
+    Static references are held constant in time, so they cannot show seasonal
+    change: this tests 12-day noise at many more points, not seasonal tracking,
+    and is reported alongside the status, never in it. `crossing` marks
+    intervals whose tracks look >= minCrossingDeg (default 30) apart.
+    '''
+    s = cfg['requirements']['seasonal']
+    pairDays = s['pairDays'] if isinstance(s['pairDays'], list) else [s['pairDays']]
+    seas = seasonalEstimates(rows, stations, cfg)
+    if len(seas) == 0:
+        return seas
+    seas['group'] = seas['station'].map(stations.set_index('station')['group'])
+    sep = crossingSeparation(rows, pairDays)
+    minDeg = s.get('minCrossingDeg', 30.)
+    seas['crossing'] = [sep.get((a, b), 0.) >= minDeg
+                        for a, b in zip(seas['station'], seas['cycle'])]
+    return seas
 
 
 def projectSeries(k, rms, nTarget, minCycles=4):
@@ -152,9 +196,15 @@ def cyclesToMeet(proj, kLast, rmsLast):
     return float(np.ceil(kLast * rmsLast ** 2))
 
 
-def summarizeCumulative(cum, reqClass, cfg):
-    '''Region-level RMS(r) per cumulative step for one requirement class.'''
+def summarizeCumulative(cum, reqClass, cfg, group=ALL_GROUP):
+    '''RMS(r) per cumulative step for one requirement class.
+
+    group selects one reference group (gps, summit, points2000, negis, ...) or ALL_GROUP
+    for every point together, which is what the status is judged on.
+    '''
     sub = cum[cum['reqClass'] == reqClass]
+    if group != ALL_GROUP and 'group' in sub:
+        sub = sub[sub['group'] == group]
     out = []
     for k, part in sub.groupby('k'):
         rec = dict(k=int(k), cycle=int(part['cycle'].iloc[0]),
@@ -211,8 +261,11 @@ def seasonalStatus(seas, cfg):
                     reason='no gated intervals with measured GPS')
     within = {qn: float(np.mean(np.abs(gated[f'r{qn}']) <= 1)) for qn in QUANTITIES}
     rms = {qn: float(np.sqrt(np.mean(gated[f'r{qn}'] ** 2))) for qn in QUANTITIES}
+    # coverage = 12-day cycles with a usable (gated) estimate out of those
+    # attempted; reported, not judged -- the requirement's 80% is spatial
+    # coverage, which point comparisons cannot test
     coverage = float(len(gated) / len(fast))
-    met = all(v >= 0.68 for v in within.values()) and coverage >= s['minCoverage']
+    met = all(v >= 0.68 for v in within.values())
     return dict(status='met' if met else 'notMet', nIntervals=int(len(fast)),
                 nGated=int(len(gated)), coverage=coverage, within=within, rms=rms,
                 rmsSpeedMPerYr=float(np.sqrt(np.mean(gated['dspeed'] ** 2))),
@@ -225,22 +278,36 @@ def runEvalStage(cfg, verbose=True):
     '''Forward model, cumulative and seasonal tables, status.json.'''
     outDir = cfg['paths']['results']
     os.makedirs(outDir, exist_ok=True)
-    stations, windows, _ = gpsSeries.loadGpsStage(cfg)
+    from validationreports import referencePoints
+    _, windows, _ = gpsSeries.loadGpsStage(cfg)
+    stations = referencePoints.allReference(cfg)
     rows, _ = obsDump.readAllDumps(cfg)
     if verbose:
-        print(f'  {len(rows)} observation rows from {rows["station"].nunique()} stations')
+        print(f'  {len(rows)} observation rows from {rows["station"].nunique()} points')
     rows = forwardModel.addForwardModel(rows, cfg, stations, windows, verbose=verbose)
     rows.to_parquet(os.path.join(outDir, 'rows.parquet'))
     cum = cumulativeEstimates(rows, stations, cfg)
     cum.to_parquet(os.path.join(outDir, 'cumulative.parquet'))
-    seas = seasonalEstimates(rows, stations, cfg)
+    gpsOnly = stations[stations['kind'] == 'gps']
+    seas = seasonalEstimates(rows[rows['station'].isin(gpsOnly['station'])], stations, cfg)
     seas.to_parquet(os.path.join(outDir, 'seasonal.parquet'))
-    status = {}
+    seasonalAllPoints(rows, stations, cfg).to_parquet(
+        os.path.join(outDir, 'seasonalAllPoints.parquet'))
+    groups = [ALL_GROUP] + list(stations['group'].drop_duplicates())
+    status = {'groups': groups[1:]}
     for reqClass in ['slow', 'fast']:
-        summary = summarizeCumulative(cum, reqClass, cfg)
-        summary.to_parquet(os.path.join(outDir, f'summary_{reqClass}.parquet'))
-        status[reqClass] = requirementStatus(summary, cfg)
+        perGroup = {}
+        for g in groups:
+            summary = summarizeCumulative(cum, reqClass, cfg, group=g)
+            summary.to_parquet(os.path.join(outDir, f'summary_{reqClass}_{g}.parquet'))
+            perGroup[g] = summary
+        status[reqClass] = requirementStatus(perGroup[ALL_GROUP], cfg)
         status[reqClass]['id'] = cfg['requirements'][reqClass]['id']
+        status[reqClass]['byGroup'] = {
+            g: (dict(nStations=int(s['nStations'].iloc[-1]),
+                     rms={qn: float(s[f'rms_{qn}'].iloc[-1]) for qn in QUANTITIES})
+                if len(s) else dict(nStations=0, rms={}))
+            for g, s in perGroup.items() if g != ALL_GROUP}
     status['seasonal'] = seasonalStatus(seas, cfg)
     status['seasonal']['id'] = cfg['requirements']['seasonal']['id']
     status['region'] = cfg['region']

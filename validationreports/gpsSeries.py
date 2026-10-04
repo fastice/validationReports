@@ -32,12 +32,22 @@ class GpsStation:
     '''Cleaned position series for one station with windowed regression.'''
 
     def __init__(self, parquetPath, epsg, denseEpochsPerDay=1000,
-                 stepMaxAngle=30.):
+                 stepMaxAngle=30., excludeAfter=None, splitGaps=None):
         self.name = os.path.basename(parquetPath).split('.')[0]
         self.parquetPath = parquetPath
         self.epsg = epsg
         raw = pq.read_table(parquetPath, columns=STATION_COLUMNS).to_pandas()
         raw = raw.sort_values('time_utc').reset_index(drop=True)
+        if excludeAfter is not None:   # config gps.excludeAfter: record not yet usable
+            raw = raw[raw['time_utc'] < pd.Timestamp(excludeAfter)].reset_index(drop=True)
+        # config gps.splitGaps: [start, end) of a known disturbance (service visit, fallen
+        # pole). Its epochs are dropped and the record is fit as two pieces with a common
+        # velocity and separate offsets (a known step at `end`).
+        self.knownSteps = []
+        for g0, g1 in (splitGaps or []):
+            g0, g1 = pd.Timestamp(g0), pd.Timestamp(g1)
+            raw = raw[(raw['time_utc'] < g0) | (raw['time_utc'] >= g1)].reset_index(drop=True)
+            self.knownSteps.append(g1)
         raw['regime'] = self._epochRegime(raw)
         self.coverage = self._coverageTable(raw, denseEpochsPerDay)
         self.data = self._cleanEpochs(raw)
@@ -51,6 +61,11 @@ class GpsStation:
         prelim = self.longTermVelocity()
         self.steps = classifySteps(candidates, prelim['vx'], prelim['vy'],
                                    maxAngle=stepMaxAngle)
+        # known steps replace any detected step within 3 days of them
+        for k in self.knownSteps:
+            self.steps = [st for st in self.steps if abs(st['day'] - k) > timedelta(days=3)]
+            self.steps.append(dict(day=k, magnitude=np.nan, known=True))
+        self.steps.sort(key=lambda st: st['day'])
 
     def _dailySeries(self):
         '''Daily median positions (m) and time (days since 1970).'''
@@ -176,12 +191,30 @@ class GpsStation:
         if i1 - i0 < minPoints or \
                 min(cov['dayFrac'], cov['spanFrac']) < minCoverageFrac:
             return result
-        if len(self.stepsWithin(date0, date1)) > 0:
+        inside = self.stepsWithin(date0, date1)
+        if any(not st.get('known', False) for st in inside):
             result['regime'] = 'step'
             return result
         t = self.tYears[i0:i1]
         x = self.data['x'].to_numpy()[i0:i1]
         y = self.data['y'].to_numpy()[i0:i1]
+        # known steps: two pieces with a common slope; a piece too short to anchor its own
+        # offset is dropped rather than fit
+        stepT = []
+        for st in inside:
+            ts = (st['day'] - pd.Timestamp('1970-01-01')).total_seconds() / SECONDS_PER_YEAR
+            nBefore, nAfter = int((t < ts).sum()), int((t >= ts).sum())
+            if nAfter < minPoints:
+                keep = t < ts
+            elif nBefore < minPoints:
+                keep = t >= ts
+            else:
+                stepT.append(ts)
+                continue
+            t, x, y = t[keep], x[keep], y[keep]
+        if stepT:
+            return self._piecewiseVelocity(result, t, x, y, stepT, minPoints,
+                                           sigmaMultiple, maxSigma)
         if sigmaMultiple is not None:
             good = np.ones(len(t), dtype=bool)
             for d in [x, y]:
@@ -200,6 +233,38 @@ class GpsStation:
         result.update(sigVx=sigVx, sigVy=sigVy, nEpochs=int(len(t)), ok=ok)
         if ok:
             result.update(vx=fx.slope / self.scale, vy=fy.slope / self.scale)
+        return result
+
+    def _piecewiseVelocity(self, result, t, x, y, stepT, minPoints, sigmaMultiple, maxSigma):
+        '''Common-slope fit with an offset after each known step (same gates as above).'''
+        A = np.column_stack([t, np.ones_like(t)] + [(t >= s).astype(float) for s in stepT])
+        good = np.ones(len(t), dtype=bool)
+        for _ in range(2 if sigmaMultiple is not None else 1):
+            fits = []
+            for d in (x, y):
+                coef = np.linalg.lstsq(A[good], d[good], rcond=None)[0]
+                fits.append((coef, d - A @ coef))
+            if sigmaMultiple is not None:
+                keep = np.ones(len(t), dtype=bool)
+                for _, resid in fits:
+                    sd = np.std(resid[good])
+                    if sd > 0:
+                        keep &= np.abs(resid) < sigmaMultiple * sd
+                good = keep
+            if good.sum() < minPoints:
+                return result
+        AtA = np.linalg.inv(A[good].T @ A[good])
+        dof = max(int(good.sum()) - A.shape[1], 1)
+        out = []
+        for coef, resid in fits:
+            s2 = float((resid[good] ** 2).sum()) / dof
+            out.append((coef[0] / self.scale, np.sqrt(s2 * AtA[0, 0]) / self.scale))
+        (vx, sigVx), (vy, sigVy) = out
+        ok = bool(max(sigVx, sigVy) <= maxSigma)
+        result.update(sigVx=sigVx, sigVy=sigVy, nEpochs=int(good.sum()), ok=ok,
+                      regime=result['regime'] if result['regime'] != 'none' else 'dense')
+        if ok:
+            result.update(vx=vx, vy=vy)
         return result
 
     def slidingWindows(self, windowDays=12, stepDays=3, **kwargs):
@@ -403,7 +468,9 @@ def loadStation(cfg, name):
         raise FileNotFoundError(f'no parquet for {name} in {cfg["paths"]["gpsDir"]}')
     return GpsStation(files[name], cfg['epsg'],
                       denseEpochsPerDay=cfg['gps']['denseEpochsPerDay'],
-                      stepMaxAngle=cfg['gps'].get('stepMaxAngle', 30.))
+                      stepMaxAngle=cfg['gps'].get('stepMaxAngle', 30.),
+                      excludeAfter=(cfg['gps'].get('excludeAfter') or {}).get(name),
+                      splitGaps=(cfg['gps'].get('splitGaps') or {}).get(name))
 
 
 def runGpsStage(cfg, verbose=True):
@@ -420,7 +487,9 @@ def runGpsStage(cfg, verbose=True):
     for name, path in stationFiles(cfg).items():
         station = GpsStation(path, cfg['epsg'],
                              denseEpochsPerDay=gpsCfg['denseEpochsPerDay'],
-                             stepMaxAngle=gpsCfg.get('stepMaxAngle', 30.))
+                             stepMaxAngle=gpsCfg.get('stepMaxAngle', 30.),
+                             excludeAfter=(gpsCfg.get('excludeAfter') or {}).get(name),
+                             splitGaps=(gpsCfg.get('splitGaps') or {}).get(name))
         lt, speed, reqClass, tol = stationTolerance(station, cfg)
         windows = station.slidingWindows(
             windowDays=gpsCfg['windowDays'], stepDays=gpsCfg['stepDays'],

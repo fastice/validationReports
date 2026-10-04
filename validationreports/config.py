@@ -9,6 +9,7 @@ import os
 import yaml
 
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config')
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REGIONS = ['greenland', 'antarctica']
 
 

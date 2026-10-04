@@ -43,6 +43,11 @@ def cycleOfDate(date):
     return int(np.floor(days / CYCLE_DAYS)) + 1
 
 
+def currentCycle():
+    '''Cycle containing today.'''
+    return cycleOfDate(datetime.now())
+
+
 def julDayToDatetime(julDay):
     '''Fractional Julian day (as written by mosaic3d) to datetime.'''
     return MJD_EPOCH + timedelta(days=julDay - MJD_OFFSET)

@@ -11,8 +11,11 @@ shelfMask: null                                                   # production: 
 #
 # mosaic3d point-mode run (mirrors Release/Velocity/hopper2d baseFlags; no squint by
 # decision 2026-09-02)
+# -noAzimuthRows added 2026-10-01: the dumped azimuth rows carry the opposite sign to the
+# solved velocity (d/(a.v) = -1 for every station and cycle, range and phase +1), so they pull
+# the solve the wrong way; this matches the 12-day cycle mosaics, which also drop them.
 mosaic3d:
-  flags: "-SVConst -verticalCorrection /Volumes/insar10/ian/SMB/corrections/RacmoMARAvg-iceEquiv-1958-2021 -fl 1 -noVh -rOffsets -hopper3D -hopper3DMaxSigma -1 -timeThresh 37 -timePhaseThresh 10000 -timeOverlap"
+  flags: "-SVConst -verticalCorrection /Volumes/insar10/ian/SMB/corrections/RacmoMARAvg-iceEquiv-1958-2021 -fl 1 -noVh -rOffsets -hopper3D -hopper3DMaxSigma -1 -timeThresh 37 -timePhaseThresh 10000 -timeOverlap -noAzimuthRows"
   useSquint: false
   dx: 0.5            # km, production grid spacing
   date1: 06-01-2025
@@ -26,7 +29,7 @@ groups:
 requirements:
   slow:     {id: L2-SCI-667, absErr: 1,  pct: 0.03, maxSpeed: 50}
   fast:     {id: L2-SCI-668, absErr: 5,  pct: 0.03, minSpeed: 50}
-  seasonal: {id: L2-SCI-738, absErr: 10, pct: 0.03, pairDays: 12, minRows: 4, maxSigma: 10, minCoverage: 0.8}
+  seasonal: {id: L2-SCI-738, absErr: 10, pct: 0.03, pairDays: 12, minRows: 2, maxSigma: 10, minCoverage: 0.8}
 projectionCycles: 30
 #
 gps:

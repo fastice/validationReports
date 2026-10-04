@@ -184,47 +184,94 @@ def _stationColors(names):
     return {n: SERIES[STATION_SLOTS[i % len(STATION_SLOTS)]] for i, n in enumerate(names)}
 
 
-def figCumulative(cum, summary, reqClass, cfg, outPath, title):
+GROUP_STYLE = {'gps': ('GPS stations', SERIES['blue']),
+               'summit': ('Summit points', SERIES['violet']),
+               'points2000': ('2000 m points', SERIES['aqua']),
+               'negis': ('NEGIS points', SERIES['magenta'])}
+
+
+def figCumulative(cum, summaries, reqClass, cfg, outPath, title):
     '''Cumulative-cycle panels for one requirement class.
 
-    Row 1: NISAR - GPS in m/yr per station with formal sigma bars.
-    Row 2: normalised residual r = delta / T per station with the +-1 band.
-    Row 3: RMS(r) over stations with the fitted projection to projectionCycles.
+    Row 1: NISAR - GPS in m/yr per GPS station with formal sigma bars.
+    Row 2: normalised residual r = delta / T per GPS station with the +-1 band,
+           plus the median and 16-84% range of each static point group.
+    Row 3: RMS(r) per reference group and over all points, with the fitted
+           projection of the all-points curve to projectionCycles.
+    summaries is {group: summary DataFrame}, 'all' included.
     '''
     sub = cum[cum['reqClass'] == reqClass]
-    names = sorted(sub['station'].unique())
+    if 'group' not in sub:
+        sub = sub.assign(group='gps')
+    gpsSub = sub[sub['group'] == 'gps']
+    names = sorted(gpsSub['station'].unique())
     colors = _stationColors(names)
+    staticGroups = [g for g in sub['group'].unique() if g != 'gps']
     nTarget = cfg['projectionCycles']
+    # x axis = NISAR cycle number from the first cycle with data to the current
+    # cycle; cycles absent from the master leave a gap (NaN breaks the line)
+    firstCycle = int(sub['cycle'].min()) if len(sub) else 1
+    lastCycle = max(int(sub['cycle'].max()) if len(sub) else 1, cycles.currentCycle())
+    xCycles = np.arange(firstCycle, lastCycle + 1)
+
+    def onCycles(frame, col):
+        ser = frame.set_index('cycle')[col]
+        ser = ser[~ser.index.duplicated()]
+        return ser.reindex(xCycles).to_numpy(dtype=float)
+
     fig, axes = plt.subplots(3, 3, figsize=(12.5, 9.2), sharex='col')
     for j, qn in enumerate(['speed', 'vx', 'vy']):
         axD, axR, axS = axes[0, j], axes[1, j], axes[2, j]
+        sigCol = 'sigSpeed' if qn == 'speed' else f'sig{qn[0].upper()}{qn[1:]}'
         for name in names:
-            s = sub[sub['station'] == name].sort_values('k')
-            sig = s['sigSpeed'] if qn == 'speed' else s[f'sig{qn[0].upper()}{qn[1:]}']
-            axD.errorbar(s['k'], s[f'd{qn}'], yerr=sig, fmt='o-', ms=3.5, lw=1.2,
-                         capsize=2, color=colors[name], label=name)
-            axR.plot(s['k'], s[f'r{qn}'], 'o-', ms=3.5, lw=1.2, color=colors[name],
-                     label=name)
+            s = gpsSub[gpsSub['station'] == name].sort_values('cycle')
+            axD.errorbar(xCycles, onCycles(s, f'd{qn}'), yerr=onCycles(s, sigCol),
+                         fmt='o-', ms=3.5, lw=1.2, capsize=2, color=colors[name],
+                         label=name)
+            axR.plot(xCycles, onCycles(s, f'r{qn}'), 'o-', ms=3.5, lw=1.2,
+                     color=colors[name], label=name)
+        for g in staticGroups:
+            lab, color = GROUP_STYLE.get(g, (g, SERIES['green']))
+            gs = sub[sub['group'] == g].groupby('cycle')[f'r{qn}']
+            q = gs.quantile([0.16, 0.5, 0.84]).unstack().reindex(xCycles)
+            axR.fill_between(xCycles, q[0.16], q[0.84], color=color, alpha=0.15, lw=0)
+            axR.plot(xCycles, q[0.5], '-', lw=1.6, color=color,
+                     label=f'{lab} median, 16–84%')
         axD.axhline(0, color=INK, lw=0.8)
         axR.axhspan(-1, 1, color=SERIES['blue'], alpha=0.08, lw=0)
         axR.axhline(0, color=INK, lw=0.8)
-        axD.set_title(f'{QUANTITY_LABEL[qn]}: NISAR − GPS (m/yr)', loc='left', fontsize=9.5)
+        axD.set_title(f'{QUANTITY_LABEL[qn]}: NISAR − GPS (m/yr), GPS stations',
+                      loc='left', fontsize=9.5)
         axR.set_title(f'{QUANTITY_LABEL[qn]}: residual / tolerance', loc='left', fontsize=9.5)
-        if len(summary):
+        from validationreports.requirements import projectSeries, ALL_GROUP
+        for g, summary in summaries.items():
+            if len(summary) == 0 or (g == ALL_GROUP and len(summaries) <= 2):
+                continue
+            lab, color = GROUP_STYLE.get(g, ('all points', INK))
+            axS.plot(xCycles, onCycles(summary, f'rms_{qn}'), 'o-', ms=3.5,
+                     lw=1.8 if g == ALL_GROUP else 1.2, color=color, label=f'RMS(r) {lab}')
+        # projection of the curve the status is judged on, drawn forward from
+        # the last data cycle assuming one data cycle per future cycle
+        judged = ALL_GROUP if len(summaries) > 2 else 'gps'
+        summary = summaries.get(judged, summaries.get('gps'))
+        projEnd = lastCycle
+        if summary is not None and len(summary):
             k = summary['k'].to_numpy()
             rms = summary[f'rms_{qn}'].to_numpy()
-            axS.plot(k, rms, 'o-', ms=4, color=SERIES['blue'], label='RMS(r) over stations')
-            from validationreports.requirements import projectSeries
+            cLast = int(summary['cycle'].iloc[-1])
             p = projectSeries(k, rms, nTarget)
-            if np.isfinite(p['projected']):
-                kk = np.arange(k[-1], nTarget + 1)
+            if np.isfinite(p['projected']) and nTarget > k[-1]:
+                cc = np.arange(cLast, cLast + nTarget - k[-1] + 1)
+                NN = k[-1] + (cc - cLast)
                 if p['method'] == 'fit':
-                    curve = np.sqrt(p['floor'] ** 2 + p['random'] ** 2 / kk)
+                    curve = np.sqrt(p['floor'] ** 2 + p['random'] ** 2 / NN)
                 else:
-                    curve = rms[-1] * np.sqrt(k[-1] / kk)
-                axS.plot(kk, curve, '--', color=SERIES['orange'], lw=1.4,
-                         label=f'projection ({p["method"]}) → {p["projected"]:.2f} at {nTarget}')
-                axS.plot([nTarget], [p['projected']], 's', color=SERIES['orange'], ms=5)
+                    curve = rms[-1] * np.sqrt(k[-1] / NN)
+                projEnd = int(cc[-1])
+                axS.plot(cc, curve, '--', color=SERIES['orange'], lw=1.4,
+                         label=f'projection ({p["method"]}) → {p["projected"]:.2f} '
+                               f'at {nTarget} data cycles')
+                axS.plot([projEnd], [p['projected']], 's', color=SERIES['orange'], ms=5)
         axS.axhline(1, color=STATUS['critical'], lw=1, ls=':', label='requirement (r = 1)')
         # the first cycles are geometry-starved and off-scale; clamp so the
         # steady state is legible (points beyond the limits sit on the edge)
@@ -234,10 +281,22 @@ def figCumulative(cum, summary, reqClass, cfg, outPath, title):
         axR.set_ylim(-rLim, rLim)
         axS.set_ylim(0, rLim)
         axS.set_title(f'{QUANTITY_LABEL[qn]}: RMS residual / tolerance', loc='left', fontsize=9.5)
-        axS.set_xlabel('cumulative NISAR cycles in the master input')
+        # same quantity in m/yr on the right: fraction x mean tolerance of the points
+        right = axS.secondary_yaxis('right', functions=(lambda r, t=meanTol: r * t,
+                                                        lambda e, t=meanTol: e / t))
+        right.set_ylabel(f'RMS error (m/yr) at mean tolerance {meanTol:.1f}', fontsize=8,
+                         color=MUTED)
+        right.tick_params(labelsize=8, colors=MUTED)
+        axS.set_xlabel('NISAR cycle (12-day; estimate uses all data up to that cycle)')
         axS.legend(fontsize=7.5, loc='upper right')
-        axS.set_xlim(0.5, nTarget + 0.5)
+        axS.set_xlim(firstCycle - 0.5, max(lastCycle, projEnd) + 0.5)
+        ticks = [c for c in range(firstCycle, max(lastCycle, projEnd) + 1) if c % 6 == 0]
+        axS.set_xticks(ticks)
+        axS.set_xticklabels([f'{c}\n{cycles.cycleStart(c):%b %d}' for c in ticks], fontsize=7.5)
+        axS.axvline(lastCycle + 0.5, color=GRID, lw=1)
     axes[0, 0].legend(fontsize=7.5, ncol=2)
+    if staticGroups:
+        axes[1, 2].legend(fontsize=7, loc='upper right')
     fig.suptitle(title, x=0.01, ha='left', fontsize=11, fontweight='semibold')
     fig.tight_layout(rect=(0, 0, 1, 0.965))
     fig.savefig(outPath, dpi=DPI)
@@ -264,9 +323,13 @@ def figSeasonal(seas, stations, cfg, outPath, title):
     for i, name in enumerate(names):
         sub = fast[fast['station'] == name].sort_values('date')
         ok = sub[sub['gated']]
+        # gap-aware series: cycles without a gated estimate break the lines
+        cRange = range(int(fast['cycle'].min()), int(fast['cycle'].max()) + 1)
+        okc = ok.set_index('cycle').reindex(cRange)
+        okc['date'] = [cycles.cycleStart(c) + pd.Timedelta(days=6) for c in cRange]
         bad = sub[~sub['gated']]
         axL, axR = axes[i]
-        axL.errorbar(ok['date'], ok['speed'], yerr=ok['sigSpeed'], fmt='o-', ms=3.5,
+        axL.errorbar(okc['date'], okc['speed'], yerr=okc['sigSpeed'], fmt='o-', ms=3.5,
                      lw=1.2, capsize=2, color=SERIES['blue'], label='NISAR 12-day')
         dom = ok[['qReal', 'qInterp', 'qExtrap']].idxmax(axis=1).str[1:].str.lower()
         for q, c in qualColor.items():
@@ -274,7 +337,7 @@ def figSeasonal(seas, stations, cfg, outPath, title):
             if m.any():
                 axL.plot(ok['date'][m], ok['speedG'][m], 's', ms=4, color=c,
                          label=f'GPS forward model ({q})')
-        axL.plot(ok['date'], ok['speedG'], '--', lw=1, color=SERIES['orange'])
+        axL.plot(okc['date'], okc['speedG'], '--', lw=1, color=SERIES['orange'])
         if len(bad):
             # rejected solves can be wildly off; pin them to the top edge
             lo = min(ok['speed'].min() - 2 * ok['sigSpeed'].max(), ok['speedG'].min())
@@ -286,22 +349,78 @@ def figSeasonal(seas, stations, cfg, outPath, title):
                      label=f'rejected (σ ≥ {s["maxSigma"]} m/yr), off scale')
         axL.set_ylabel(f'{name}\nspeed (m/yr)', fontsize=8.5)
         axL.legend(fontsize=7, ncol=2)
-        axR.fill_between(ok['date'], -ok['tol'], ok['tol'], color=SERIES['blue'], alpha=0.1,
+        axR.fill_between(okc['date'], -okc['tol'], okc['tol'], color=SERIES['blue'], alpha=0.1,
                          lw=0, label='3% + 10 m/yr envelope')
         axR.axhline(0, color=INK, lw=0.8)
-        axR.errorbar(ok['date'], ok['dvx'], yerr=ok['sigVx'], fmt='o-', ms=3, lw=1,
+        axR.errorbar(okc['date'], okc['dvx'], yerr=okc['sigVx'], fmt='o-', ms=3, lw=1,
                      capsize=2, color=SERIES['aqua'], label='Δvx')
-        axR.errorbar(ok['date'], ok['dvy'], yerr=ok['sigVy'], fmt='s-', ms=3, lw=1,
+        axR.errorbar(okc['date'], okc['dvy'], yerr=okc['sigVy'], fmt='s-', ms=3, lw=1,
                      capsize=2, color=SERIES['violet'], label='Δvy')
-        axR.plot(ok['date'], ok['dspeed'], '^-', ms=4, lw=1.4, color=INK, label='Δspeed')
+        axR.plot(okc['date'], okc['dspeed'], '^-', ms=4, lw=1.4, color=INK, label='Δspeed')
         axR.set_ylabel('NISAR − GPS (m/yr)', fontsize=8.5)
         axR.legend(fontsize=7, ncol=2)
+    # run the axis from the first cycle with data to the end of the GPS record
+    firstDate = cycles.cycleStart(int(fast['cycle'].min()))
+    lastDate = pd.Timestamp(stations[stations['station'].isin(names)]['recordEnd'].max())
     for ax in axes[-1]:
         _dateAxis(ax)
+        ax.set_xlim(firstDate - pd.Timedelta(days=6), lastDate + pd.Timedelta(days=6))
     axes[0, 0].set_title('12-day interval speed: NISAR vs GPS', loc='left', fontsize=9.5)
     axes[0, 1].set_title('Per-interval residuals vs L2-SCI-738 envelope', loc='left', fontsize=9.5)
     fig.suptitle(title, x=0.01, ha='left', fontsize=11, fontweight='semibold')
     fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(outPath, dpi=DPI)
+    plt.close(fig)
+    return outPath
+
+
+def figSeasonalAllPoints(seasAll, cfg, outPath, title):
+    '''r per 12-day crossing interval at every reference point, fast | slow by
+    speed, vx, vy; each panel notes % within T and sigma of NISAR - reference,
+    the column title the number of intervals.'''
+    d = seasAll[seasAll['crossing']] if 'crossing' in seasAll else seasAll
+    lim = 2.0
+    rng = np.random.default_rng(0)
+    order = ['negis', 'points2000', 'summit', 'gps']
+    fig, axes = plt.subplots(3, 2, figsize=(11, 7.6), sharex=True, sharey=True)
+    for j, cls in enumerate(['fast', 'slow']):
+        c = d[d['reqClass'] == cls]
+        for i, qn in enumerate(['speed', 'vx', 'vy']):
+            ax = axes[i, j]
+            ax.axhspan(-1, 1, color=CYCLE_SHADE, lw=0)
+            ax.axhline(0, color=MUTED, lw=0.6)
+            for g in sorted(c['group'].unique(), key=lambda g: order.index(g) if g in order else -1):
+                e = c[c['group'] == g]
+                lab, color = GROUP_STYLE.get(g, (g, SERIES['green']))
+                jit = pd.to_timedelta(rng.uniform(-3, 3, len(e)), unit='D')
+                isGps = g == 'gps'
+                ax.plot(e['date'] + jit, e[f'r{qn}'].clip(-lim, lim), '^' if isGps else 'o',
+                        color=color, ms=5 if isGps else 2.5, alpha=0.95 if isGps else 0.5,
+                        mec=INK if isGps else 'none', mew=0.4,
+                        label=f'{lab} ({e["station"].nunique()})')
+            if len(c):
+                out = int(np.sum(np.abs(c[f'r{qn}']) > 1))
+                w = 100 * (1 - out / len(c))
+                sig = np.std(c[f'd{qn}'])
+                ax.text(0.01, 0.96, f'{qn}: {w:.1f}% within T ({out} outside), '
+                        f'σ = {sig:.1f} m/yr',
+                        transform=ax.transAxes, va='top',
+                        fontsize=9, fontweight='bold', color=INK)
+            ax.set_ylim(-lim, lim)
+            if j == 0:
+                ax.set_ylabel(f'r {qn}')
+        axes[0, j].set_title(f'{cls} points ({c["station"].nunique()}), {len(c)} intervals',
+                             fontweight='bold')
+        axes[2, j].xaxis.set_major_formatter(mdates.ConciseDateFormatter(
+            axes[2, j].xaxis.get_major_locator()))
+    handles, labels = axes[0, 1].get_legend_handles_labels()
+    for h, l in zip(*axes[0, 0].get_legend_handles_labels()):
+        if l.split(' (')[0] not in [x.split(' (')[0] for x in labels]:
+            handles.append(h); labels.append(l)
+    fig.legend(handles, [l.split(' (')[0] for l in labels], loc='lower center',
+               ncol=len(labels), markerscale=1.6)
+    fig.suptitle(title, fontweight='bold')
+    fig.tight_layout(rect=(0, 0.04, 1, 0.97))
     fig.savefig(outPath, dpi=DPI)
     plt.close(fig)
     return outPath
@@ -322,4 +441,12 @@ def resultFigures(cfg, cum, summaries, seas, stations, outDir=None):
     paths['seasonal'] = figSeasonal(
         seas, stations, cfg, os.path.join(outDir, 'seasonal.png'),
         f"{label} {cfg['requirements']['seasonal']['id']}: 12-day intervals")
+    allPath = os.path.join(cfg['paths']['results'], 'seasonalAllPoints.parquet')
+    if os.path.exists(allPath):
+        seasAll = pd.read_parquet(allPath)
+        if len(seasAll):
+            paths['seasonalAllPoints'] = figSeasonalAllPoints(
+                seasAll, cfg, os.path.join(outDir, 'seasonalAllPoints.png'),
+                f"{label} {cfg['requirements']['seasonal']['id']} at every validation point "
+                '(static values held constant; crossing intervals; |r| > 2 clipped)')
     return paths

@@ -9,10 +9,23 @@ epsg: 3413
 dem: /Volumes/insar7/ian/gimp/gimp2/270m/dem.gimp2.270m.cog.tif   # greenland.yaml dem
 shelfMask: null                                                     # production: none
 #
-# mosaic3d point-mode run (mirrors Release/velocity/hopper2d-nosquint baseFlags; -fl 1
-# since the boxes are small; no squint anywhere by decision 2026-09-02)
+# mosaic3d point-mode run (mirrors the release baseFlags; -fl 1 since the boxes are small;
+# no squint anywhere by decision 2026-09-02).
+#
+# -gateAbsolute -jointMaxSigmaPhase 50 added 2026-09-07.  The default gate is
+# sigma_worst*sqrt(nEff) <= 35, which rejects on geometric dilution rather than noise: it was
+# cutting 715k px of Greenland coastal margin that have real crossing geometry and honest ~10
+# m/yr errors.  Note the gateAbsolute comment in mosaic3d.c claims "Greenland is unaffected" --
+# that was inferred from Antarctica and is wrong here.  Cost of the flat 50 m/yr cap, measured
+# against a 500 m/yr run: 365 px of genuinely good fast data (median 4083 m/yr, sigma 60), i.e.
+# 0.0009% of the mosaic.  Raising the cap to recover them would admit 3992 px whose error
+# exceeds their own speed, so the flat cap stays; a speed-aware cap max(50, 0.03*v) would be
+# the principled fix if those 365 px ever matter.
+# -noAzimuthRows added 2026-10-01: the dumped azimuth rows carry the opposite sign to the
+# solved velocity (d/(a.v) = -1 for every station and cycle, range and phase +1), so they pull
+# the solve the wrong way; this matches the 12-day cycle mosaics, which also drop them.
 mosaic3d:
-  flags: "-SVConst -verticalCorrection /Volumes/insar10/ian/SMB/corrections/RacmoMARAvg-iceEquiv-1958-2021 -fl 1 -noVh -rOffsets -hopper3D -hopper3DMaxSigma -1 -timeThresh 37 -timePhaseThresh 10000 -timeOverlap"
+  flags: "-SVConst -verticalCorrection /Volumes/insar10/ian/SMB/corrections/RacmoMARAvg-iceEquiv-1958-2021 -fl 1 -noVh -rOffsets -hopper3D -hopper3DMaxSigma -1 -gateAbsolute -jointMaxSigmaPhase 50 -timeThresh 37 -timePhaseThresh 10000 -timeOverlap -noAzimuthRows"
   useSquint: false
   dx: 0.2            # km, production grid spacing
   date1: 06-01-2025
@@ -24,10 +37,20 @@ groups:
   - {name: NIL, stations: [NIL1, NIL2, NIL3, NIL4, NIL5], marginKm: 5}
   - {name: NIU, stations: [NIU1, NIU2, NIU3, NIU4, NIU5], marginKm: 5}
 #
+# Static reference point sets (single velocities, no time series): each is clustered
+# into boxes of maxClusterKm for the point-mode runs; existing dumps with the same
+# point set are reused. Paths are relative to the validationReports repo.
+referenceSets:
+  - {name: summit,  file: referencePoints/summitPoints.csv,            groupPrefix: SUMMIT, maxClusterKm: 60, marginKm: 5}
+  - {name: points2000, file: referencePoints/tiePoints2000_validation.csv, groupPrefix: P2000, maxClusterKm: 45, marginKm: 5}
+  - {name: negis, file: referencePoints/negisPoints.csv, groupPrefix: NEGIS, namePrefix: NG, maxClusterKm: 70, marginKm: 5}
+#
 requirements:
   slow:     {id: L2-SCI-667, absErr: 1,  pct: 0.03, maxSpeed: 50}
   fast:     {id: L2-SCI-668, absErr: 5,  pct: 0.03, minSpeed: 50}
-  seasonal: {id: L2-SCI-738, absErr: 10, pct: 0.03, pairDays: 12, minRows: 4, maxSigma: 10, minCoverage: 0.8}
+  # pairDays [12, 24, 36] (2026-10-01): the same pairs as the 12-day cycle mosaics -- every
+  # pair referenced in the cycle -- scored against GPS over each pair's own dates.
+  seasonal: {id: L2-SCI-738, absErr: 10, pct: 0.03, pairDays: [12, 24, 36], minRows: 2, maxSigma: 10, minCoverage: 0.8}
 projectionCycles: 30
 #
 gps:
@@ -41,3 +64,16 @@ gps:
   stableTolFrac: 0.5      # stable if smoothed peak-to-peak <= this * requirement tolerance
   stepMaxAngle: 30        # a position step more than this many degrees off the flow
                           # direction is an antenna reset / regime offset, not motion
+  # Per-station cutoff: epochs on/after this date are dropped. NIL1 restarted Aug 2026 with
+  # ~7 days of data giving 190 m/yr (269 long-term), r = 4.3 from one cycle; not used for now
+  # (decision 2026-10-01). Remove the entry once its 2026 record is long enough.
+  excludeAfter:
+    NIL1: 2026-01-01
+  # Service visit 21 Aug 2026 (NIL1/2/4 serviced; NIL3 jumped ~1.3 m the same day): too close
+  # to the record end for detectSteps (16-day fit windows), so the disturbed days are dropped
+  # and the record is fit in two pieces (common velocity, separate offsets) -- decision
+  # 2026-10-01, "cycle 28 as two pieces before and after".
+  splitGaps:
+    NIL2: [[2026-08-20, 2026-08-22]]
+    NIL3: [[2026-08-20, 2026-08-22]]
+    NIL4: [[2026-08-20, 2026-08-22]]

@@ -1,6 +1,6 @@
 # Reference velocity points for validation
 
-Three point sets for validating ice-velocity products where the GPS network does not
+Four point sets for validating ice-velocity products where the GPS network does not
 reach. All coordinates are EPSG:3413; `x`,`y` are metres, velocities m/yr.
 
 ## `summitPoints.csv` — 9 stations, Summit area
@@ -48,6 +48,22 @@ RMS(residual/tolerance) 0.766 slow and 0.425 fast — both requirements met.
 independent: of the 91 points with scatter ≤5 % of mean, 24 still project to >10 %
 change over the gap. Only 2 of the 45 are below 6 m/yr, so this set does **not**
 constrain the very slow regime.
+
+## `negisPoints.csv` — 63 points, NEGIS / EastGRIP strain net
+
+From `/home/ian/NISAR/nisarCryoCalValNotebooks/GPSpoints/NEGIS-GPS.txt`: Hvidberg, C. S. et al.
+(2020), Surface velocity of the Northeast Greenland Ice Stream (NEGIS): assessment of interior
+velocities derived from satellite data by GPS, *The Cryosphere* 14, 3487–3502,
+doi:10.5194/tc-14-3487-2020. A 63-pole strain net observed 2015–2019, 75.5–75.9 N,
+~2700 m, 9.7–58.4 m/yr (52 slow, 11 fast). Source columns are lat, lon, elev, vx, vy, flag
+(all 0); `vx`/`vy` are already EPSG:3413 components.
+
+**No cull.** The GPS epoch sits inside the S1 annual stack, and the stack mean reads 1.0007
+of the GPS speed (median over the 63), so the 2000 m trend screen is not applied. The
+`s1Stack*`/`trend*` columns are kept for reference. All 63 fall in one point-mode box (NEGIS01).
+
+Not used: `NEGIS{1,2,3}_velocity.corrected.txt` in the same directory (daily 2016–2019
+series from Abbas Khan) — the source README requires his permission to use them.
 
 ## Caveat that applies to every comparison here
 

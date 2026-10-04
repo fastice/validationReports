@@ -37,6 +37,20 @@ Stability: peak-to-peak of the 36-day-smoothed 12-day speed from dense windows o
 no data; variable stations get `interp` within one window length, else the row is skipped
 from BOTH solves.
 
+## Static reference sets (referencePoints.py)
+
+`referenceSets` in a region config (Greenland: `referencePoints/summitPoints.csv` and
+`tiePoints2000_validation.csv`) are single velocities with no time series: forward model =
+constant velocity (quality `static`), always stable. The 2000 m points are named `T<row>` by 0-based
+row in the validation CSV; Summit uses its `station` column. Each set is clustered in table
+order (`maxClusterKm`) for the point-mode runs; **an existing dump directory whose point set
+matches a cluster is reused** (matching by lat/lon, not by name), so the other session's
+TIE01..TIE33 / SUMMIT runs are not repeated, and clusters that must run get a directory name
+no run has used (`_assignFreeNames`) and run `maxParallel` (8) at a time. The mapping is
+written to `pointMode/groups.json` and read by the eval stage. Status for slow/fast is
+judged on ALL points (`group = all`); per-group RMS(r) (gps / summit / points2000) is reported
+alongside. Seasonal uses GPS stations only.
+
 ## Evaluation (requirements.py)
 
 Residual r = (NISAR - GPS) / T with T = 0.03 |v_GPS| + c, evaluated for speed, vx, vy.

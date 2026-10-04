@@ -58,16 +58,26 @@ def readDump(path):
 
 
 def readAllDumps(cfg):
-    '''Rows and pixel slopes for every group in a region.'''
+    '''Rows and pixel slopes for every group in a region.
+
+    GPS groups come from cfg['groups']; static reference groups from the
+    groups.json the dump stage wrote (which may point at reused directories).
+    '''
+    from validationreports import referencePoints
     allRows, pixels = [], {}
-    for group in cfg['groups']:
-        path = pointMode.dumpPath(cfg, group)
+    dumps = [(g['name'], pointMode.dumpPath(cfg, g), set(g['stations']))
+             for g in cfg['groups']]
+    for name, g in referencePoints.loadGroups(cfg).items():
+        dumps.append((name, os.path.join(g['dir'], 'mosaicOffsets.obsDump'),
+                      set(g['stations'])))
+    for name, path, wanted in dumps:
         if not os.path.exists(path):
             raise FileNotFoundError(f'missing dump {path}; run the dump stage')
         rows, pix = readDump(path)
-        rows['group'] = group['name']
+        rows = rows[rows['station'].isin(wanted)]
+        rows['group'] = name
         allRows.append(rows)
-        pixels.update(pix)
+        pixels.update({k: v for k, v in pix.items() if k in wanted})
     rows = pd.concat(allRows, ignore_index=True)
     rows['sx'] = rows['station'].map(lambda s: pixels.get(s, (0., 0.))[0])
     rows['sy'] = rows['station'].map(lambda s: pixels.get(s, (0., 0.))[1])
@@ -89,9 +99,13 @@ def solve2D(rows, sx, sy, key='d'):
     C = np.array([[1., 0.], [0., 1.], [sx, sy]])
     N2 = C.T @ N @ C
     b2 = C.T @ b
-    if np.linalg.eigvalsh(N2).min() <= 0:
+    ev = np.linalg.eigvalsh(N2)
+    if ev.min() <= 0 or ev.max() / ev.min() > 1e12:
         return None, None
-    inv = np.linalg.inv(N2)
+    try:
+        inv = np.linalg.inv(N2)
+    except np.linalg.LinAlgError:
+        return None, None
     return inv @ b2, np.sqrt(np.diag(inv))
 
 
